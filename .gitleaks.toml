@@ -4,8 +4,8 @@ title = "Source publication: default rules plus one verified synthetic fixture"
 useDefault = true
 
 [[allowlists]]
-description = "Literal fake secret used to test repr/log redaction; no other values or files exempted"
+description = "Exact fake literal and variable assignment in the repr/log redaction test; no other values or files exempted"
 condition = "AND"
 paths = ['''^tests[/\\]test_broker_paper_safety\.py$''']
 regexTarget = "secret"
-regexes = ['''^SUPER_SECRET_KEY_NEVER_PRINT$''']
+regexes = ['''^SUPER_SECRET_KEY_NEVER_PRINT$''', '''^ALPACA_SECRET_KEY=secret$''']

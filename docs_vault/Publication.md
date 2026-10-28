@@ -62,7 +62,7 @@ runtime records. `data/` contains Python source, not a copied market-data cache.
 - The default source scan found one synthetic redaction-test fixture in
   `tests/test_broker_paper_safety.py:266`, not an owner credential. The final
   default-rules-plus-exception scan passed with **zero findings**. `.gitleaks.toml`
-  allows only the exact fake fixture value AND that exact test path, not an
+  allows only the exact fake fixture value or literal variable assignment AND that exact test path, not an
   entire test directory or rule. Scanning the full test file through stdin,
   without the permitted file path, still detects the fixture (exit 1).
 - Broad ignores cover environments, nested logs, state, databases/sidecars,
@@ -77,6 +77,18 @@ runtime records. `data/` contains Python source, not a copied market-data cache.
 Scanning is bounded evidence, not a proof that every possible secret format or
 encoded value is absent. The discarded environment/old history is not cleared
 for publication by this source-only review.
+
+### Initial-commit verification follow-up
+
+The authorized initial source-only commit was created after the preparation
+review. The first Git-history scan flagged the literal code expression
+`ALPACA_SECRET_KEY=secret` in the same redaction test. In-memory comparison
+confirmed this is a variable assignment, not a credential. The exception now
+also includes that exact expression, still restricted to the exact test path.
+This scanner-only correction is recorded in a separate follow-up commit; no
+application or test code changed. The preparation-time statements and example
+commands below describe the original pre-commit state: do not repeat initial
+commit creation. Scan all new history before any separately authorized push.
 
 ## Tests and CI review
 
