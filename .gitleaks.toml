@@ -1,0 +1,11 @@
+title = "Source publication: default rules plus one verified synthetic fixture"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Literal fake secret used to test repr/log redaction; no other values or files exempted"
+condition = "AND"
+paths = ['''^tests[/\\]test_broker_paper_safety\.py$''']
+regexTarget = "secret"
+regexes = ['''^SUPER_SECRET_KEY_NEVER_PRINT$''']

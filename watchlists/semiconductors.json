@@ -1,0 +1,5 @@
+{
+  "name": "semiconductors",
+  "description": "Semiconductor and chip manufacturers",
+  "tickers": ["NVDA", "AMD", "INTC", "QCOM", "MU", "TSM", "ASML", "AVGO"]
+}

@@ -1,0 +1,5 @@
+{
+  "name": "mega_caps",
+  "description": "Mega-cap technology and consumer stocks",
+  "tickers": ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA"]
+}

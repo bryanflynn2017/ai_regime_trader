@@ -1,0 +1,5 @@
+{
+  "name": "market_etfs",
+  "description": "Major US market ETFs",
+  "tickers": ["SPY", "QQQ", "IWM", "DIA", "EEM", "VTI", "VOO", "VGT"]
+}

@@ -1,0 +1,33 @@
+{
+  "name": "momentum_universe",
+  "description": "Broader active large-cap and momentum universe for shadow forward testing",
+  "tickers": [
+    "SPY",
+    "QQQ",
+    "DIA",
+    "IWM",
+    "NVDA",
+    "AMD",
+    "AVGO",
+    "MU",
+    "INTC",
+    "QCOM",
+    "TSM",
+    "ASML",
+    "AAPL",
+    "MSFT",
+    "META",
+    "AMZN",
+    "GOOGL",
+    "TSLA",
+    "NFLX",
+    "PLTR",
+    "COIN",
+    "HOOD",
+    "SOFI",
+    "RDDT",
+    "ARM",
+    "CRWD",
+    "SMCI"
+  ]
+}
