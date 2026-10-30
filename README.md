@@ -4,8 +4,7 @@ A Python 3.11+ intraday trading research and shadow-testing command center, with
 an explicitly activated, human-approved Alpaca **paper-only** execution lifecycle.
 This source-only snapshot contains no account data, credentials or trading history.
 
-Public-release preparation is in progress. The repository remains PRIVATE until
-the owner separately approves visibility changes. This is experimental research
+Public-release preparation is in progress. As of now, this is experimental research
 software, not investment advice, a profitability claim, or production certification.
 
 ## Safety boundary
