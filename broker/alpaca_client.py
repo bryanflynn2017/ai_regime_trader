@@ -23,6 +23,8 @@ from zoneinfo import ZoneInfo
 from typing import Any, Dict, List, Optional
 
 from broker.base import OrderNotSubmitted
+from config.secret_values import secret_value
+from utils.provider_errors import safe_provider_error
 
 try:
     from loguru import logger  # type: ignore
@@ -208,11 +210,14 @@ class AlpacaClientWrapper:
                 "(requires 64-bit Python or a system with build tools)."
             )
 
-        self._trading_client = _TradingClient(
-            api_key=self._s.ALPACA_API_KEY,
-            secret_key=self._s.ALPACA_SECRET_KEY,
-            paper=True,  # ALWAYS paper — never live
-        )
+        try:
+            self._trading_client = _TradingClient(
+                api_key=secret_value(self._s.ALPACA_API_KEY),
+                secret_key=secret_value(self._s.ALPACA_SECRET_KEY),
+                paper=True,  # ALWAYS paper — never live
+            )
+        except Exception as exc:
+            raise AlpacaConnectionError(safe_provider_error("Paper client initialization failed", exc)) from None
         from broker.paper_transport import PaperTransport
         self._trading_client._session = PaperTransport()
         # Never automatically replay an ambiguously acknowledged POST.
@@ -238,12 +243,10 @@ class AlpacaClientWrapper:
                 "paper":          True,
                 "account_number": str(getattr(acct, "account_number", "")),
             }
-        except AlpacaConnectionError:
-            raise
         except Exception as exc:
             raise AlpacaConnectionError(
-                f"Failed to retrieve account: {exc}"
-            ) from exc
+                safe_provider_error("Failed to retrieve account", exc)
+            ) from None
 
     def get_clock(self) -> Dict[str, Any]:
         """Return market clock information."""
@@ -256,12 +259,10 @@ class AlpacaClientWrapper:
                 "next_open": str(clock.next_open),
                 "next_close":str(clock.next_close),
             }
-        except AlpacaConnectionError:
-            raise
         except Exception as exc:
             raise AlpacaConnectionError(
-                f"Failed to retrieve market clock: {exc}"
-            ) from exc
+                safe_provider_error("Failed to retrieve market clock", exc)
+            ) from None
 
     def is_market_open(self) -> bool:
         """Return True if the US equity market is currently open."""
@@ -277,12 +278,10 @@ class AlpacaClientWrapper:
         try:
             positions = client.get_all_positions()
             return [self._position_to_dict(p) for p in positions]
-        except AlpacaConnectionError:
-            raise
         except Exception as exc:
             raise AlpacaConnectionError(
-                f"Failed to list positions: {exc}"
-            ) from exc
+                safe_provider_error("Failed to list positions", exc)
+            ) from None
 
     def get_position(self, ticker: str) -> Optional[Dict[str, Any]]:
         """Return the open position for `ticker`, or None if no position."""
@@ -290,8 +289,8 @@ class AlpacaClientWrapper:
         try:
             pos = client.get_open_position(ticker.upper())
             return self._position_to_dict(pos)
-        except AlpacaConnectionError:
-            raise
+        except AlpacaConnectionError as exc:
+            raise AlpacaConnectionError(safe_provider_error("Failed to retrieve position", exc)) from None
         except Exception:
             return None  # No position for this ticker
 
@@ -316,12 +315,10 @@ class AlpacaClientWrapper:
             else:
                 orders = client.get_orders()
             return [self._order_to_dict(o) for o in orders]
-        except AlpacaConnectionError:
-            raise
         except Exception as exc:
             raise AlpacaConnectionError(
-                f"Failed to retrieve orders: {exc}"
-            ) from exc
+                safe_provider_error("Failed to retrieve orders", exc)
+            ) from None
 
     def cancel_order(self, order_id: str) -> bool:
         """Cancel a single order by ID.  Returns True if cancelled."""
@@ -427,8 +424,8 @@ class AlpacaClientWrapper:
             }
         except AlpacaSafetyError:
             raise
-        except Exception:
-            raise AlpacaConnectionError("Paper account verification failed") from None
+        except Exception as exc:
+            raise AlpacaConnectionError(safe_provider_error("Paper account verification failed", exc)) from None
 
     def get_order_by_client_id(self, client_order_id: str) -> Optional[Dict[str, Any]]:
         try:
@@ -439,7 +436,7 @@ class AlpacaClientWrapper:
             # are NOT absence and must leave submission state unresolved.
             if getattr(exc, "status_code", None) == 404:
                 return None
-            raise AlpacaConnectionError("Paper order lookup failed") from None
+            raise AlpacaConnectionError(safe_provider_error("Paper order lookup failed", exc)) from None
 
     def submit_managed_order(self, order: Dict[str, Any], *, before_submit=None) -> Dict[str, Any]:
         """v1.3 simple DAY order, with durable caller-supplied client ID."""

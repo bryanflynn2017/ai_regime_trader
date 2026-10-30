@@ -4,6 +4,10 @@ A Python 3.11+ intraday trading research and shadow-testing command center, with
 an explicitly activated, human-approved Alpaca **paper-only** execution lifecycle.
 This source-only snapshot contains no account data, credentials or trading history.
 
+Public-release preparation is in progress. The repository remains PRIVATE until
+the owner separately approves visibility changes. This is experimental research
+software, not investment advice, a profitability claim, or production certification.
+
 ## Safety boundary
 
 - Shadow/simulation is the default; live execution is unavailable.
@@ -62,5 +66,20 @@ not implemented by this publication snapshot.
 See [publication notes](docs_vault/Publication.md) and
 [security policy](SECURITY.md). Concept notes preserve design context and may
 describe historical milestones; code and current safety policy take precedence.
-The original project declares MIT metadata but has no accompanying root license
-grant; do not assume third-party redistribution rights until the owner resolves this.
+
+## License and contributions
+
+Original project code and documentation are licensed under the [MIT License](LICENSE),
+copyright (c) 2026 Bryan Flynn. Dependencies retain their own licenses; see
+[third-party review](THIRD_PARTY.md). No market-data redistribution rights are granted.
+
+Use small feature branches and pull requests, synthetic fixtures, offline tests,
+and redacted secret scans. Do not upload account records or credentials in issues,
+screenshots, logs, or PRs. Report vulnerabilities privately as described in SECURITY.md.
+
+Settings use redacted secret fields. Supply credentials only through local environment
+variables or an ignored, access-controlled `.env`; never put live brokerage keys in
+this application. Serialization is diagnostic, not a credential backup/round trip.
+Explicit secret extraction occurs only at SDK/HTTP boundaries. Secret wrappers are
+not encryption: trusted Python code, debuggers and memory dumps can still access values.
+Do not expose the local dashboard or approval database to untrusted users.

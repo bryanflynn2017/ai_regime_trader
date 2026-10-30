@@ -6,7 +6,9 @@
   `ai_regime_trader` archive/runtime directory. Verify `git rev-parse --show-toplevel`
   and use an explicit working directory before every edit or Git operation.
 - Expected origin: `https://github.com/bryanflynn2017/ai_regime_trader.git`.
-  Verify the authenticated owner is `bryanflynn2017` and the repository is private.
+  Verify the authenticated owner is `bryanflynn2017`. The repository must remain
+  PRIVATE during release preparation. PUBLIC visibility requires separate explicit
+  owner authorization; public-maintenance instructions are not that authorization.
 - Use existing Git and authenticated GitHub CLI for requested operations. On
   Windows, if `gh` is not on PATH, use `C:/Program Files/GitHub CLI/gh.exe`.
   The connected GitHub integration can inspect pushed code, not local-only edits.
@@ -22,6 +24,8 @@
   Legacy history belongs only in the separate local backup and private archived
   `ai_regime_trader_legacy_20261029` repository. Never merge or push legacy refs,
   trading records, or runtime artifacts into this repository.
+- The legacy archive must remain PRIVATE even if this source repository becomes
+  public. Never attach private backups or runtime records to issues or pull requests.
 
 ## Development and publication workflow
 
@@ -42,6 +46,13 @@
   rules: ignored files already tracked are still publishable.
 - Keep Alpaca keys, account identifiers, trade records, runtime data, and broker
   state out of Git. Never put broker credentials into GitHub Actions secrets.
+- For public contributions, use hosted disposable CI, not the trading workstation
+  or a self-hosted runner with credentials. Inspect untrusted changes before local
+  execution; the offline wrapper is not a hostile-code sandbox. Never combine
+  untrusted PR checkout with `pull_request_target`, write tokens or secrets.
+- Follow SECURITY.md for private disclosure. Do not put exploits containing real
+  credentials or account records into public issues. Preserve LICENSE and notices;
+  require provenance/compatible licensing for third-party contributions or data.
 - Report changed files, exact test results, commit SHAs (if committed), PR URLs
   (if created), and any incomplete security checks. Never claim local edits are
   visible through GitHub until their authorized push is verified.
@@ -62,4 +73,4 @@
 - Never enable live trading. Broker-order submission requires a separate explicit
   authorization for supervised paper acceptance and the existing exact-order
   approval safeguards; development, Git operations and CI never authorize orders.
-- Private GitHub publication and pushes require owner authorization.
+- Commits, pushes, merges, and visibility changes each require explicit owner authorization.

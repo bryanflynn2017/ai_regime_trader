@@ -24,9 +24,10 @@ _SEPARATOR = "\u2501" * 20
 
 
 def _webhook_url() -> str:
+    from config.secret_values import secret_value
     from config.settings import settings
 
-    return str(getattr(settings, "DISCORD_WEBHOOK_URL", "") or "").strip()
+    return secret_value(getattr(settings, "DISCORD_WEBHOOK_URL", "")).strip()
 
 
 def is_discord_configured() -> bool:
