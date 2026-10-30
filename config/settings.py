@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import warnings
 from pathlib import Path
-from typing import List, Literal
+from typing import ClassVar, List, Literal
 
-from pydantic import field_validator
+from pydantic import Field, SecretStr, TypeAdapter, field_serializer, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_SECRET_ADAPTER = TypeAdapter(SecretStr, config={"hide_input_in_errors": True})
 
 
 class Settings(BaseSettings):
@@ -28,6 +30,7 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         case_sensitive=True,
         extra="ignore",
+        hide_input_in_errors=True,
     )
 
     # -------------------------------------------------------------------------
@@ -41,11 +44,34 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------------
     # Alpaca credentials — loaded from .env, never hardcoded
     # -------------------------------------------------------------------------
-    ALPACA_API_KEY: str = ""
-    ALPACA_SECRET_KEY: str = ""
+    ALPACA_API_KEY: SecretStr = Field(default=SecretStr(""), repr=False)
+    ALPACA_SECRET_KEY: SecretStr = Field(default=SecretStr(""), repr=False)
     ALPACA_BASE_URL: str = "https://paper-api.alpaca.markets"
     ALPACA_PAPER: bool = True
-    DISCORD_WEBHOOK_URL: str = ""
+    DISCORD_WEBHOOK_URL: SecretStr = Field(default=SecretStr(""), repr=False)
+
+    _secret_fields: ClassVar[frozenset[str]] = frozenset({
+        "ALPACA_API_KEY", "ALPACA_SECRET_KEY", "DISCORD_WEBHOOK_URL",
+    })
+
+    @field_serializer("ALPACA_API_KEY", "ALPACA_SECRET_KEY", "DISCORD_WEBHOOK_URL")
+    def redact_secret(self, value):
+        # Both Python/dict and JSON modes return strings, never raw credentials.
+        return "**********" if value else ""
+
+    def __setattr__(self, name, value):
+        # Validate secret reassignment without changing validation of risk/settings.
+        if name in self._secret_fields:
+            value = _SECRET_ADAPTER.validate_python(value)
+        super().__setattr__(name, value)
+
+    def model_copy(self, *, update=None, deep=False):
+        # Pydantic normally trusts copy updates without validation.
+        if update is not None:
+            update = dict(update)
+            for name in self._secret_fields.intersection(update):
+                update[name] = _SECRET_ADAPTER.validate_python(update[name])
+        return super().model_copy(update=update, deep=deep)
 
     # -------------------------------------------------------------------------
     # Trading universe — edit this list to change what we trade

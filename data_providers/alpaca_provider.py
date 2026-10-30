@@ -13,6 +13,7 @@ import pandas as pd
 
 from data.market_data import DataFetchError, validate_ohlcv
 from data_providers.base import DataProvider, DataProviderError
+from utils.provider_errors import safe_provider_error
 
 
 _TIMEFRAME_MINUTES: Dict[str, int] = {
@@ -53,7 +54,10 @@ class AlpacaDataProvider(DataProvider):
         client = self._get_client()
         try:
             request = self._build_request(ticker, start, end, timeframe)
-            response = client.get_stock_bars(request)
+            try:
+                response = client.get_stock_bars(request)
+            except Exception as exc:
+                raise DataProviderError(self._format_provider_error("Historical bar request failed", exc)) from None
             df = self._response_to_dataframe(response, ticker)
             validate_ohlcv(df)
             self._attach_freshness_metadata(df)
@@ -61,11 +65,11 @@ class AlpacaDataProvider(DataProvider):
         except DataProviderError:
             raise
         except DataFetchError as exc:
-            raise DataProviderError(f"AlpacaDataProvider validation failed for '{ticker}': {exc}") from exc
+            raise DataProviderError(self._format_provider_error("AlpacaDataProvider OHLCV validation failed", exc)) from None
         except Exception as exc:
             raise DataProviderError(
-                self._format_provider_error(f"AlpacaDataProvider failed for '{ticker}': {exc}")
-            ) from exc
+                self._format_provider_error("AlpacaDataProvider failed", exc)
+            ) from None
 
     def get_latest_bar(self, ticker: str, timeframe: str = "1Min") -> pd.DataFrame:
         """
@@ -81,7 +85,10 @@ class AlpacaDataProvider(DataProvider):
         try:
             if hasattr(client, "get_stock_latest_bar"):
                 request = self._build_latest_request(ticker)
-                response = client.get_stock_latest_bar(request)
+                try:
+                    response = client.get_stock_latest_bar(request)
+                except Exception as exc:
+                    raise DataProviderError(self._format_provider_error("Latest bar request failed", exc)) from None
                 df = self._latest_response_to_dataframe(response, ticker)
             else:
                 end = self._current_utc()
@@ -93,11 +100,11 @@ class AlpacaDataProvider(DataProvider):
         except DataProviderError:
             raise
         except DataFetchError as exc:
-            raise DataProviderError(f"AlpacaDataProvider validation failed for latest '{ticker}': {exc}") from exc
+            raise DataProviderError(self._format_provider_error("AlpacaDataProvider latest OHLCV validation failed", exc)) from None
         except Exception as exc:
             raise DataProviderError(
-                self._format_provider_error(f"AlpacaDataProvider latest bar failed for '{ticker}': {exc}")
-            ) from exc
+                self._format_provider_error("AlpacaDataProvider latest bar failed", exc)
+            ) from None
 
     def _get_client(self):
         if self._client is not None:
@@ -109,8 +116,9 @@ class AlpacaDataProvider(DataProvider):
             settings = default_settings
             self.settings = settings
 
-        api_key = getattr(settings, "ALPACA_API_KEY", None)
-        secret_key = getattr(settings, "ALPACA_SECRET_KEY", None)
+        from config.secret_values import secret_value
+        api_key = secret_value(getattr(settings, "ALPACA_API_KEY", None))
+        secret_key = secret_value(getattr(settings, "ALPACA_SECRET_KEY", None))
         if not api_key or not secret_key:
             raise DataProviderError(
                 "AlpacaDataProvider requires Alpaca paper data credentials. "
@@ -124,7 +132,10 @@ class AlpacaDataProvider(DataProvider):
                 "alpaca-py is unavailable. Install alpaca-py to use --provider alpaca."
             ) from exc
 
-        self._client = StockHistoricalDataClient(api_key, secret_key)
+        try:
+            self._client = StockHistoricalDataClient(api_key, secret_key)
+        except Exception as exc:
+            raise DataProviderError(self._format_provider_error("Market data client initialization failed", exc)) from None
         return self._client
 
     def _build_request(
@@ -209,14 +220,12 @@ class AlpacaDataProvider(DataProvider):
         except Exception:
             return self.feed
 
-    @staticmethod
-    def _format_provider_error(message: str) -> str:
-        text = str(message)
-        lowered = text.lower()
-        if "sip" in lowered and ("subscription" in lowered or "permit" in lowered or "permission" in lowered):
+    def _format_provider_error(self, operation: str, error: Exception) -> str:
+        text = safe_provider_error(operation, error)
+        if self.feed == "sip":
             return (
-                f"{text} Your Alpaca plan does not permit SIP data. "
-                "Use --alpaca-feed iex or upgrade Alpaca data subscription."
+                f"{text} If your plan does not permit SIP data, "
+                "use --alpaca-feed iex or review your data subscription."
             )
         return text
 
