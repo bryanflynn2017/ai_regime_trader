@@ -104,8 +104,7 @@ def test_fractional_remainder_is_not_written_off(ledger):
 
 
 @pytest.mark.parametrize("last_action,equity,pnls", [("HOLD", 99998, []), ("SELL", 99996, [-4])])
-def test_terminal_mark_or_actual_exit(ledger, last_action, equity, pnls):
-    bt, _ = ledger
+def test_terminal_mark_or_actual_exit(last_action, equity, pnls, monkeypatch):
     dates = pd.bdate_range("2020-01-01", periods=WARMUP_BARS + 2)
     df = pd.DataFrame(dict(open=100., high=101., low=99., close=100., volume=100000.), index=dates)
 
@@ -118,8 +117,10 @@ def test_terminal_mark_or_actual_exit(ledger, last_action, equity, pnls):
         d.original_action = signal.action
         return d
 
-    bt._orch = SimpleNamespace(generate_signal=signal)
-    bt._risk_mgr = SimpleNamespace(evaluate_signal=approve)
+    bt = Backtester(commission_per_trade=2, slippage_bps=0,
+                    orchestrator=SimpleNamespace(generate_signal=signal))
+    monkeypatch.setattr("risk.risk_manager.RiskManager.evaluate_signal",
+                        lambda self, **kwargs: approve(**kwargs))
     result = bt.run_single_ticker("ABC", df)
     assert result.config_snapshot["accounting_version"] == 2
     assert result.final_equity == result.equity_curve.iloc[-1] == equity

@@ -53,10 +53,11 @@ class StrategyOrchestrator:
         signal = orch.generate_signal("SPY", df)
     """
 
-    def __init__(self, regime_engine: Optional[Any] = None) -> None:
+    def __init__(self, regime_engine: Optional[Any] = None, *, settings_override=None) -> None:
+        self._settings = settings if settings_override is None else settings_override
         if regime_engine is None:
             from regime.fallback_regime import FallbackRegimeClassifier
-            regime_engine = FallbackRegimeClassifier()
+            regime_engine = FallbackRegimeClassifier(settings_override=self._settings)
         self._regime_engine = regime_engine
         self._allocation = AllocationPolicy()
 
@@ -146,7 +147,7 @@ class StrategyOrchestrator:
             )
 
         # Second gate: per-ticker technical criteria
-        buy_passed, buy_reason, rejections = _check_buy_conditions(row, regime_result)
+        buy_passed, buy_reason, rejections = _check_buy_conditions(row, regime_result, self._settings)
         if buy_passed:
             return self._make_buy(ticker, df, row, regime_result, buy_reason)
 
@@ -220,8 +221,8 @@ class StrategyOrchestrator:
         reason: str,
     ) -> Signal:
         close      = _safe_float(row.get("close", 0.0))
-        stop_loss  = close * (1.0 - settings.DEFAULT_STOP_LOSS_PCT)
-        take_profit = close * (1.0 + settings.DEFAULT_TAKE_PROFIT_PCT)
+        stop_loss  = close * (1.0 - self._settings.DEFAULT_STOP_LOSS_PCT)
+        take_profit = close * (1.0 + self._settings.DEFAULT_TAKE_PROFIT_PCT)
 
         target_exp  = self._allocation.get_target_exposure(
             regime_result.label, regime_result.confidence, regime_result.is_uncertain
@@ -298,6 +299,7 @@ class StrategyOrchestrator:
 def _check_buy_conditions(
     row: pd.Series,
     regime_result: Any,
+    cfg=None,
 ) -> Tuple[bool, str, List[str]]:
     """
     Evaluate all BUY entry criteria for a single bar.
@@ -305,6 +307,7 @@ def _check_buy_conditions(
     Returns:
         (passed, reason_string, rejection_reasons_list)
     """
+    cfg = settings if cfg is None else cfg
     rejections: List[str] = []
 
     close  = _safe_float(row.get("close",  np.nan))
@@ -321,19 +324,19 @@ def _check_buy_conditions(
     if np.isnan(close) or close <= 0:
         rejections.append("close price invalid")
     else:
-        if close < settings.MIN_PRICE:
+        if close < cfg.MIN_PRICE:
             rejections.append(
-                f"price {close:.2f} below MIN_PRICE {settings.MIN_PRICE}"
+                f"price {close:.2f} below MIN_PRICE {cfg.MIN_PRICE}"
             )
-        if close > settings.MAX_PRICE:
+        if close > cfg.MAX_PRICE:
             rejections.append(
-                f"price {close:.2f} above MAX_PRICE {settings.MAX_PRICE}"
+                f"price {close:.2f} above MAX_PRICE {cfg.MAX_PRICE}"
             )
 
     # -- Volume (absolute liquidity) --
-    if np.isnan(vol) or vol < settings.MIN_AVG_DAILY_VOLUME:
+    if np.isnan(vol) or vol < cfg.MIN_AVG_DAILY_VOLUME:
         rejections.append(
-            f"volume {vol:,.0f} below MIN_AVG_DAILY_VOLUME {settings.MIN_AVG_DAILY_VOLUME:,.0f}"
+            f"volume {vol:,.0f} below MIN_AVG_DAILY_VOLUME {cfg.MIN_AVG_DAILY_VOLUME:,.0f}"
         )
 
     # -- Relative volume --

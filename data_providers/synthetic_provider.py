@@ -2,12 +2,13 @@
 SyntheticDataProvider — deterministic random-walk OHLCV data.
 
 NOT real market data.  For offline smoke testing and CI only.
-Each ticker gets data from a different seed (base_seed + hash(ticker))
+Each ticker gets a stable seed derived from its name and the base seed
 so tickers are not identical to each other.
 """
 from __future__ import annotations
 
 from datetime import datetime
+from hashlib import sha256
 from typing import Dict, List, Optional, Union
 
 import pandas as pd
@@ -83,13 +84,16 @@ class SyntheticDataProvider(DataProvider):
 
         try:
             # Vary seed by ticker so multiple tickers are not identical
-            ticker_seed = (self._seed + abs(hash(ticker))) % (2**31)
-            return generate_synthetic_ohlcv(
+            offset = int.from_bytes(sha256(ticker.encode()).digest()[:8], "big")
+            ticker_seed = (self._seed + offset) % (2**31)
+            bars = generate_synthetic_ohlcv(
                 rows=self._rows,
                 start=self._start,
                 seed=ticker_seed,
                 interval_minutes=interval_minutes,
             )
+            bars.attrs["synthetic_seed"] = ticker_seed
+            return bars
         except DataFetchError as exc:
             raise DataProviderError(
                 f"SyntheticDataProvider failed: {exc}"

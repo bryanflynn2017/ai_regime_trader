@@ -695,6 +695,8 @@ def walk_forward(
                     "test_return":  w.test_result.metrics.total_return,
                     "test_sharpe":  w.test_result.metrics.sharpe_ratio,
                     "test_max_dd":  w.test_result.metrics.max_drawdown,
+                    "train_config": w.train_result.config_snapshot,
+                    "test_source_config": w.test_result.config_snapshot,
                 }
                 for i, w in enumerate(result.windows)
             ],
