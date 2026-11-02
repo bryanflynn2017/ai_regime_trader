@@ -95,7 +95,8 @@ def inject_missing_data(
     """
     rng = np.random.default_rng(seed)
     result = {}
-    for ticker, df in data_by_ticker.items():
+    for ticker in sorted(data_by_ticker):
+        df = data_by_ticker[ticker]
         n_drop = max(1, int(len(df) * missing_fraction))
         drop_idx = rng.choice(len(df), size=n_drop, replace=False)
         mask = np.ones(len(df), dtype=bool)
@@ -134,6 +135,7 @@ def inject_stale_data(
 def run_standard_stress_tests(
     backtester: Any,
     data_by_ticker: Dict[str, pd.DataFrame],
+    *, seed: int = 42,
 ) -> Dict[str, Any]:
     """
     Run the standard battery of stress tests and return named results.
@@ -158,7 +160,7 @@ def run_standard_stress_tests(
         "drop_10":          inject_market_drop(data_by_ticker, drop_pct=0.10),
         "drop_15":          inject_market_drop(data_by_ticker, drop_pct=0.15),
         "volatility_spike": inject_volatility_spike(data_by_ticker, multiplier=2.0),
-        "missing_data":     inject_missing_data(data_by_ticker),
+        "missing_data":     inject_missing_data(data_by_ticker, seed=seed),
         "stale_data":       inject_stale_data(data_by_ticker),
     }
 
@@ -166,7 +168,11 @@ def run_standard_stress_tests(
     for name, data in scenarios.items():
         try:
             logger.info("Running stress scenario: {}", name)
-            results[name] = backtester.run(data)
+            result = backtester.run(data)
+            result.config_snapshot["research_manifest"]["stress_scenario"] = name
+            if name == "missing_data":
+                result.config_snapshot["research_manifest"]["missing_data_seed"] = seed
+            results[name] = result
         except Exception as exc:
             logger.warning("Stress test '{}' raised: {}", name, exc)
             results[name] = str(exc)

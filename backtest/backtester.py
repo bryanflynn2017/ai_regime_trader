@@ -178,8 +178,12 @@ class Backtester:
     Inject a custom `orchestrator` for deterministic testing:
         bt = Backtester(orchestrator=my_mock_orch)
 
-    Use `settings_override` to control the risk-lock-file path so
-    backtests never touch the real state/ directory.
+    Settings overrides supply research thresholds only. State paths are always
+    disposable. For repeatable custom runs, supply orchestrator_factory(cfg, seed)
+    returning a fresh strategy with a local RNG and no external mutable state.
+    Declare strategy_id (a public lowercase slug) and strategy_version (e.g. "1.2.0")
+    for custom runs. Bump the version when implementation or hidden configuration
+    changes. Only the slug digest is exported; declarations are not code attestation.
     """
 
     def __init__(
@@ -189,30 +193,27 @@ class Backtester:
         commission_per_trade: float = 0.0,
         orchestrator:         Any   = None,
         settings_override:    Any   = None,
+        *, orchestrator_factory=None, seed: int = 42,
+        strategy_id: Optional[str] = None, strategy_version: Optional[str] = None,
     ) -> None:
         self.starting_equity      = starting_equity
         self.slippage_bps         = slippage_bps
         self.commission_per_trade = commission_per_trade
 
-        # Use an isolated temp directory so backtest never writes to state/
-        if settings_override is None:
-            from config.settings import Settings
-            tmp = tempfile.mkdtemp(prefix="bt_")
-            self._settings = Settings(
-                STATE_DIR=tmp,
-                RISK_LOCK_FILE=os.path.join(tmp, "RISK_LOCKED.txt"),
-            )
-        else:
-            self._settings = settings_override
+        from config.settings import settings
+        from backtest.research_manifest import declared, strategy_identity
 
-        from risk.risk_manager import RiskManager
-        self._risk_mgr = RiskManager(settings_override=self._settings)
-
-        if orchestrator is None:
-            from strategy.strategy_orchestrator import StrategyOrchestrator
-            self._orch = StrategyOrchestrator()
-        else:
-            self._orch = orchestrator
+        if orchestrator is not None and orchestrator_factory is not None:
+            raise ValueError("Choose orchestrator or orchestrator_factory")
+        if type(seed) is not int:
+            raise ValueError("Expected an integer research seed")
+        self.seed = seed
+        self._identity = strategy_identity(orchestrator_factory is not None or orchestrator is not None,
+                                           strategy_id, strategy_version)
+        self._declared = declared(settings if settings_override is None else settings_override)
+        self._factory = orchestrator_factory
+        self._prototype = orchestrator
+        self._legacy_used = False
 
     # ------------------------------------------------------------------
     # Public API
@@ -237,6 +238,38 @@ class Backtester:
         Portfolio constraints (max positions, exposure) are applied
         across tickers simultaneously via the RiskManager.
         """
+        from copy import deepcopy
+        from backtest.research_manifest import manifest
+        from config.settings import Settings
+        from risk.risk_manager import RiskManager
+        from strategy.strategy_orchestrator import StrategyOrchestrator
+
+        with tempfile.TemporaryDirectory(prefix="bt_") as tmp:
+            # Reuse already validated scalar settings, never caller credentials or paths.
+            cfg = Settings.model_construct(**self._declared, STATE_DIR=tmp, LOG_DIR=tmp,
+                                           RISK_LOCK_FILE=os.path.join(tmp, "RISK_LOCKED.txt"))
+            if self._factory is not None:
+                orch = self._factory(cfg.model_copy(deep=True), self.seed)
+            elif self._prototype is not None:
+                # deepcopy cannot isolate mutable closures or external RNGs.
+                if self._legacy_used:
+                    raise ValueError("Repeated custom runs require orchestrator_factory(cfg, seed)")
+                self._legacy_used = True
+                orch = deepcopy(self._prototype)
+            else:
+                orch = StrategyOrchestrator(settings_override=cfg)
+            provenance = manifest(data_by_ticker, cfg, self._identity,
+                                  self.seed if self._factory is not None else None)
+            result = self._run(data_by_ticker, orch, RiskManager(settings_override=cfg))
+            provenance["simulation"] = {
+                "accounting_version": 2, "starting_equity": self.starting_equity,
+                "slippage_bps": self.slippage_bps, "commission_per_trade": self.commission_per_trade,
+                "warmup_bars": WARMUP_BARS, "reduce_fraction": REDUCE_FRACTION,
+            }
+            result.config_snapshot.update(accounting_version=2, research_manifest=provenance)
+            return result
+
+    def _run(self, data_by_ticker, orch, risk_mgr) -> BacktestResult:
         if not data_by_ticker:
             return self._empty_result("No ticker data provided")
 
@@ -304,7 +337,7 @@ class Backtester:
 
                 try:
                     from strategy.signals import SignalAction
-                    signal = self._orch.generate_signal(ticker, df_to_date)
+                    signal = orch.generate_signal(ticker, df_to_date)
 
                     if signal.action != SignalAction.HOLD:
                         signals_log.append({
@@ -317,7 +350,7 @@ class Backtester:
                     if signal.action == SignalAction.HOLD:
                         continue
 
-                    decision = self._risk_mgr.evaluate_signal(
+                    decision = risk_mgr.evaluate_signal(
                         signal                     = signal,
                         equity                     = portfolio.equity,
                         starting_day_equity        = portfolio.day_start_equity,

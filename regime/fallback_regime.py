@@ -80,6 +80,10 @@ class FallbackRegimeClassifier:
         5. neutral  — mixed signals (default)
     """
 
+    def __init__(self, *, settings_override=None):
+        from config.settings import settings
+        self._settings = settings if settings_override is None else settings_override
+
     def classify_latest(self, df: pd.DataFrame) -> RegimeResult:
         """
         Classify the market regime as of the last row of df.
@@ -157,8 +161,7 @@ class FallbackRegimeClassifier:
         )
 
         # Stability / uncertainty applied across the label series (backward-looking).
-        from config.settings import settings
-        is_stable = _compute_is_stable(label_series, n=settings.REGIME_STABILITY_BARS)
+        is_stable = _compute_is_stable(label_series, n=self._settings.REGIME_STABILITY_BARS)
         is_uncertain = _compute_is_uncertain(label_series, n=20, max_unique=3)
 
         # Dampen confidence when uncertain.
@@ -326,8 +329,7 @@ class FallbackRegimeClassifier:
         Return a list of the most recent regime labels by re-classifying a
         small trailing window. Used only for stability assessment.
         """
-        from config.settings import settings
-        n = max(settings.REGIME_STABILITY_BARS, 20)
+        n = max(self._settings.REGIME_STABILITY_BARS, 20)
         start = max(0, len(df) - n)
         past = []
         for i in range(start, len(df)):
@@ -348,8 +350,7 @@ class FallbackRegimeClassifier:
         is_stable:   last REGIME_STABILITY_BARS labels are all current_label
         is_uncertain: more than 3 distinct labels in the recent window
         """
-        from config.settings import settings
-        n_stable = settings.REGIME_STABILITY_BARS
+        n_stable = self._settings.REGIME_STABILITY_BARS
 
         if len(past_labels) < n_stable:
             return False, False
