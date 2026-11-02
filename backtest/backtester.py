@@ -85,6 +85,7 @@ class _Position:
     stop_loss:   float
     take_profit: float
     current_price: float = 0.0
+    entry_fees_remaining: float = 0.0
 
 
 class _Portfolio:
@@ -140,6 +141,27 @@ class _Portfolio:
             self._last_iso_week    = new_week
 
         self._last_date = date
+
+    def book_exit(self, pos: _Position, shares: float, fill: float, fee: float,
+                  date: pd.Timestamp, action: str, reason: str) -> None:
+        """Record one simulated exit. Entry fees already left cash on purchase."""
+        full_exit = shares == pos.shares
+        entry_fee = (pos.entry_fees_remaining if full_exit else
+                     pos.entry_fees_remaining * (shares / pos.shares))
+        self.cash += shares * fill - fee
+        self.trades.append({
+            "ticker": pos.ticker, "action": action, "entry_date": pos.entry_date,
+            "exit_date": date, "entry_price": pos.entry_price, "exit_price": fill,
+            "shares": shares, "entry_fee": entry_fee, "exit_fee": fee,
+            "pnl": (fill - pos.entry_price) * shares - entry_fee - fee,
+            "exit_reason": reason,
+        })
+        if full_exit:
+            del self.positions[pos.ticker]
+        else:
+            pos.entry_fees_remaining -= entry_fee
+            pos.shares -= shares
+            pos.current_price = fill
 
     def update_peak(self) -> None:
         self.peak_equity = max(self.peak_equity, self.equity)
@@ -366,6 +388,7 @@ class Backtester:
             config_snapshot = {
                 "slippage_bps":         self.slippage_bps,
                 "commission_per_trade": self.commission_per_trade,
+                "accounting_version":   2,  # Unversioned runs predate pooled basis/fee allocation.
                 "warmup_bars":          WARMUP_BARS,
                 "starting_equity":      self.starting_equity,
             },
@@ -407,44 +430,13 @@ class Backtester:
 
         # -- Stop-loss: fill below stop, conservative --
         if pos.stop_loss > 0 and low <= pos.stop_loss:
-            fill   = pos.stop_loss * (1.0 - slip)
-            pnl    = (fill - pos.entry_price) * pos.shares - self.commission_per_trade
-            proceeds = fill * pos.shares - self.commission_per_trade
-
-            portfolio.cash += proceeds
-            portfolio.trades.append({
-                "ticker":      ticker,
-                "action":      "SELL",
-                "entry_date":  pos.entry_date,
-                "exit_date":   date,
-                "entry_price": pos.entry_price,
-                "exit_price":  fill,
-                "shares":      pos.shares,
-                "pnl":         pnl,
-                "exit_reason": "stop_loss",
-            })
-            del portfolio.positions[ticker]
-            return
-
-        # -- Take-profit --
-        if pos.take_profit > 0 and high >= pos.take_profit:
-            fill   = pos.take_profit * (1.0 - slip)
-            pnl    = (fill - pos.entry_price) * pos.shares - self.commission_per_trade
-            proceeds = fill * pos.shares - self.commission_per_trade
-
-            portfolio.cash += proceeds
-            portfolio.trades.append({
-                "ticker":      ticker,
-                "action":      "SELL",
-                "entry_date":  pos.entry_date,
-                "exit_date":   date,
-                "entry_price": pos.entry_price,
-                "exit_price":  fill,
-                "shares":      pos.shares,
-                "pnl":         pnl,
-                "exit_reason": "take_profit",
-            })
-            del portfolio.positions[ticker]
+            fill = pos.stop_loss * (1.0 - slip)
+            portfolio.book_exit(pos, pos.shares, fill, self.commission_per_trade,
+                                date, "SELL", "stop_loss")
+        elif pos.take_profit > 0 and high >= pos.take_profit:
+            fill = pos.take_profit * (1.0 - slip)
+            portfolio.book_exit(pos, pos.shares, fill, self.commission_per_trade,
+                                date, "SELL", "take_profit")
 
     # ------------------------------------------------------------------
     # Private: order execution
@@ -476,76 +468,38 @@ class Backtester:
             fill = close * (1.0 + slip)
             cost = fill * ps.shares + self.commission_per_trade
 
-            if cost > portfolio.cash + 1.0:  # 1$ tolerance for float rounding
+            if not cost <= portfolio.cash:
                 portfolio.warnings.append(
                     f"{date}/{ticker}: insufficient cash (need ${cost:.0f}, "
                     f"have ${portfolio.cash:.0f})"
                 )
                 return
 
-            portfolio.cash -= cost
-            portfolio.positions[ticker] = _Position(
-                ticker      = ticker,
-                shares      = ps.shares,
-                entry_price = fill,
-                entry_date  = date,
-                stop_loss   = signal.stop_loss,
-                take_profit = signal.take_profit,
-                current_price = fill,
-            )
-            portfolio.trades_today += 1
-
-        elif action == SignalAction.SELL:
             pos = portfolio.positions.get(ticker)
             if pos is None:
-                return
-
-            fill     = close * (1.0 - slip)
-            proceeds = fill * pos.shares - self.commission_per_trade
-            pnl      = (fill - pos.entry_price) * pos.shares - self.commission_per_trade
-
-            portfolio.cash += proceeds
-            portfolio.trades.append({
-                "ticker":      ticker,
-                "action":      "SELL",
-                "entry_date":  pos.entry_date,
-                "exit_date":   date,
-                "entry_price": pos.entry_price,
-                "exit_price":  fill,
-                "shares":      pos.shares,
-                "pnl":         pnl,
-                "exit_reason": "signal",
-            })
-            del portfolio.positions[ticker]
-            portfolio.trades_today += 1
-
-        elif action == SignalAction.REDUCE:
-            pos = portfolio.positions.get(ticker)
-            if pos is None:
-                return
-
-            reduce_shares = pos.shares * REDUCE_FRACTION
-            fill          = close * (1.0 - slip)
-            proceeds      = fill * reduce_shares - self.commission_per_trade
-            pnl           = (fill - pos.entry_price) * reduce_shares - self.commission_per_trade
-
-            portfolio.cash += proceeds
-            portfolio.trades.append({
-                "ticker":      ticker,
-                "action":      "REDUCE",
-                "entry_date":  pos.entry_date,
-                "exit_date":   date,
-                "entry_price": pos.entry_price,
-                "exit_price":  fill,
-                "shares":      reduce_shares,
-                "pnl":         pnl,
-                "exit_reason": "signal",
-            })
-            pos.shares -= reduce_shares
-            if pos.shares < 0.001:
-                del portfolio.positions[ticker]
+                pos = _Position(ticker, ps.shares, fill, date, signal.stop_loss,
+                                signal.take_profit, fill, self.commission_per_trade)
+                portfolio.positions[ticker] = pos
             else:
+                total = pos.shares + ps.shares
+                pos.entry_price = (pos.entry_price * pos.shares + fill * ps.shares) / total
+                pos.shares = total
+                pos.entry_fees_remaining += self.commission_per_trade
+                # Keep the original position date and the legacy latest-BUY exit levels.
+                pos.stop_loss = signal.stop_loss
+                pos.take_profit = signal.take_profit
                 pos.current_price = fill
+            portfolio.cash -= cost
+            portfolio.trades_today += 1
+
+        elif action in (SignalAction.SELL, SignalAction.REDUCE):
+            pos = portfolio.positions.get(ticker)
+            if pos is None:
+                return
+            shares = pos.shares if action == SignalAction.SELL else pos.shares * REDUCE_FRACTION
+            fill = close * (1.0 - slip)
+            portfolio.book_exit(pos, shares, fill, self.commission_per_trade,
+                                date, action.value, "signal")
             portfolio.trades_today += 1
 
     # ------------------------------------------------------------------
