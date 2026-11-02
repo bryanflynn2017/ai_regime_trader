@@ -62,7 +62,8 @@ def test_repeated_runs_order_lock_isolation_and_seeds(tmp_path):
         assert first.signals == repeat.signals and first.trades == repeat.trades
         assert first.config_snapshot == repeat.config_snapshot
     assert any(d["approved"] for d in a1.risk_decisions)
-    assert [d["approved"] for d in a1.risk_decisions[:2]] == [True, False]
+    # Both candidates can pass at close; only one may execute the next day.
+    assert [o["status"] for o in a1.metadata["orders"][:2]] == ["filled", "cancelled_risk"]
     assert b1.risk_decisions and not any(d["approved"] for d in b1.risk_decisions)
     assert len(set(paths)) == 4 and not any(p.parent.exists() for p in paths)
     assert marker.read_text() == "unchanged"

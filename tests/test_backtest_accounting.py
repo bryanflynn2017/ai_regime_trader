@@ -27,7 +27,7 @@ def execute(ledger, action, qty, price, day):
     bt, portfolio = ledger
     bt._execute(portfolio, "ABC", pd.Timestamp(2020, 1, day),
                 SimpleNamespace(stop_loss=price-10, take_profit=price+10),
-                decision(action, qty), pd.Series({"close": price}))
+                decision(action, qty), price)
 
 
 def reconcile(portfolio, cash, holdings, equity):
@@ -88,7 +88,7 @@ def test_trigger_exit_after_reduce(ledger, reason, low, high, price):
     execute(ledger, "BUY", 2, 100, 1)
     execute(ledger, "REDUCE", 0, 100, 2)
     reconcile(p, 896, 100, 996)
-    bt._check_exits(p, "ABC", pd.Timestamp("2020-01-03"), pd.Series({"low": low, "high": high}))
+    bt._check_exits(p, "ABC", pd.Timestamp("2020-01-03"), pd.Series({"open": 100, "low": low, "high": high}))
     reconcile(p, 894 + price, 0, 894 + price)
     assert p.trades[-1]["exit_reason"] == reason
     assert p.trades[-1]["pnl"] == price - 103
@@ -105,11 +105,11 @@ def test_fractional_remainder_is_not_written_off(ledger):
 
 @pytest.mark.parametrize("last_action,equity,pnls", [("HOLD", 99998, []), ("SELL", 99996, [-4])])
 def test_terminal_mark_or_actual_exit(last_action, equity, pnls, monkeypatch):
-    dates = pd.bdate_range("2020-01-01", periods=WARMUP_BARS + 2)
+    dates = pd.bdate_range("2020-01-01", periods=WARMUP_BARS + 3)
     df = pd.DataFrame(dict(open=100., high=101., low=99., close=100., volume=100000.), index=dates)
 
     def signal(ticker, history):
-        action = "BUY" if history.index[-1] == dates[-2] else last_action
+        action = "BUY" if history.index[-1] == dates[-3] else last_action
         return SimpleNamespace(action=SignalAction(action), reason="fixture", stop_loss=90, take_profit=110)
 
     def approve(signal, **kwargs):
