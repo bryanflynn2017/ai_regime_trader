@@ -1,6 +1,7 @@
 """Research runs never use a caller's persistent state or process-global randomness."""
 import json
 from pathlib import Path
+import subprocess
 from types import SimpleNamespace
 
 import numpy as np
@@ -8,6 +9,7 @@ import pandas as pd
 import pytest
 
 from backtest.backtester import Backtester
+from backtest.research_manifest import revision
 from backtest.stress_tests import inject_missing_data, run_standard_stress_tests
 from config.settings import Settings
 from data_providers.synthetic_provider import SyntheticDataProvider
@@ -116,3 +118,63 @@ def test_factory_exception_cleans_up_run_directory():
     with pytest.raises(RuntimeError, match="fixture failure"):
         Backtester(orchestrator_factory=fail).run({})
     assert paths and not paths[0].exists()
+
+
+def test_declared_custom_identity_round_trip():
+    def first(cfg, seed):
+        return object()
+
+    def second(cfg, seed):
+        return object()
+
+    def run(factory, **labels):
+        return Backtester(orchestrator_factory=factory, **labels).run({}).config_snapshot["research_manifest"]
+
+    labels = dict(strategy_id="research-first", strategy_version="1.0")
+    one = run(first, **labels)
+    assert one == run(first, **labels)
+    assert one["strategy_identity_status"] == "declared"
+    assert one["strategy_id"].startswith("sha256:") and "research-first" not in json.dumps(one)
+    assert one["strategy_id"] != run(second, strategy_id="research-second", strategy_version="1.0")["strategy_id"]
+    newer = run(first, strategy_id="research-first", strategy_version="1.1")
+    assert newer["strategy_id"] == one["strategy_id"] and newer["strategy_version"] == "1.1"
+    unidentified = run(second)
+    assert unidentified["strategy_identity_status"] == "unverified"
+    assert unidentified["strategy_id"] is None and unidentified["strategy_version"] is None
+    for invalid in ({"strategy_id": "alone"}, {"strategy_version": "1"},
+                    {"strategy_id": "/private/fixture", "strategy_version": "1"}):
+        with pytest.raises(ValueError, match="public strategy slug"):
+            run(first, **invalid)
+
+
+def test_revision_classifies_without_exporting_untracked_names(tmp_path):
+    def git(*args):
+        return subprocess.check_output(["git", "-C", str(tmp_path), *args], text=True).strip()
+
+    git("init", "-q")
+    (tmp_path / ".gitignore").write_text("ignored/\n")
+    git("add", ".gitignore")
+    git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+        "-c", "commit.gpgsign=false", "commit", "-qm", "fixture")
+    sha = git("rev-parse", "HEAD")
+    (tmp_path / "ignored").mkdir()
+    (tmp_path / "ignored" / "private.py").touch()
+    (tmp_path / "private.log").touch()
+    assert revision(tmp_path) == (sha, False, "clean")
+    source = tmp_path / "nested" / "sensitive-name.py"
+    source.parent.mkdir()
+    source.write_text("private fixture contents")
+    assert revision(tmp_path) == (sha, False, "untracked-source")
+    (tmp_path / ".gitignore").write_text("ignored/\n*.log\n")
+    assert revision(tmp_path) == (sha, True, "untracked-source")
+    git("add", "nested")
+    assert revision(tmp_path) == (sha, True, "modified")
+
+
+def test_revision_unavailable_is_unknown(tmp_path, monkeypatch):
+    assert revision(tmp_path) == (None, None, "unknown")
+    (tmp_path / ".git").mkdir()
+    def unavailable(*args, **kwargs):
+        raise FileNotFoundError("private fixture path")
+    monkeypatch.setattr(subprocess, "check_output", unavailable)
+    assert revision(tmp_path) == (None, None, "unknown")

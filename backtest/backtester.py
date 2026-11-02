@@ -181,6 +181,9 @@ class Backtester:
     Settings overrides supply research thresholds only. State paths are always
     disposable. For repeatable custom runs, supply orchestrator_factory(cfg, seed)
     returning a fresh strategy with a local RNG and no external mutable state.
+    Declare strategy_id (a public lowercase slug) and strategy_version (e.g. "1.2.0")
+    for custom runs. Bump the version when implementation or hidden configuration
+    changes. Only the slug digest is exported; declarations are not code attestation.
     """
 
     def __init__(
@@ -191,19 +194,22 @@ class Backtester:
         orchestrator:         Any   = None,
         settings_override:    Any   = None,
         *, orchestrator_factory=None, seed: int = 42,
+        strategy_id: Optional[str] = None, strategy_version: Optional[str] = None,
     ) -> None:
         self.starting_equity      = starting_equity
         self.slippage_bps         = slippage_bps
         self.commission_per_trade = commission_per_trade
 
         from config.settings import settings
-        from backtest.research_manifest import declared
+        from backtest.research_manifest import declared, strategy_identity
 
         if orchestrator is not None and orchestrator_factory is not None:
             raise ValueError("Choose orchestrator or orchestrator_factory")
         if type(seed) is not int:
             raise ValueError("Expected an integer research seed")
         self.seed = seed
+        self._identity = strategy_identity(orchestrator_factory is not None or orchestrator is not None,
+                                           strategy_id, strategy_version)
         self._declared = declared(settings if settings_override is None else settings_override)
         self._factory = orchestrator_factory
         self._prototype = orchestrator
@@ -252,8 +258,8 @@ class Backtester:
                 orch = deepcopy(self._prototype)
             else:
                 orch = StrategyOrchestrator(settings_override=cfg)
-            provenance = manifest(data_by_ticker, cfg, self._factory is not None or
-                                  self._prototype is not None, self.seed if self._factory else None)
+            provenance = manifest(data_by_ticker, cfg, self._identity,
+                                  self.seed if self._factory is not None else None)
             result = self._run(data_by_ticker, orch, RiskManager(settings_override=cfg))
             provenance["simulation"] = {
                 "accounting_version": 2, "starting_equity": self.starting_equity,
