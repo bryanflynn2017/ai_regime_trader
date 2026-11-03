@@ -24,7 +24,12 @@ workflows. These are license families, not a complete locked transitive SBOM:
 | yfinance, alpaca-py, streamlit, requests | Apache-2.0 |
 | pydantic, pydantic-settings, plotly, loguru, typer, pytest, pytest-cov | MIT |
 
-Requirements remain unchanged. Minimum-version ranges mean installations can
+Research session-contract addition (2026-11-03): exchange-calendars 4.13.2,
+Apache-2.0, is a declared dependency, not vendored code. Its calendar rules
+are used through the public API; no upstream implementation was copied.
+Source and licensing: https://pypi.org/project/exchange_calendars/4.13.2/
+
+Minimum-version ranges mean installations can
 resolve different versions. Before distributing a container, executable, environment
 or vendored package, inventory the exact transitive versions and preserve all
 applicable copyright, license, NOTICE and bundled-library notices. No blanket

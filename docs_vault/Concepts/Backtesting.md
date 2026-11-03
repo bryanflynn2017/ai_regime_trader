@@ -76,6 +76,8 @@ different execution assumptions: rerun comparisons; do not relabel old results.
 Backtesting is required before trusting new strategies or AI-generated ideas.
 
 ## Related Notes
+- [[Research Market Data Contract]] — opt-in UTC/session/availability contract;
+  legacy inputs remain explicitly unverified.
 - [[Walk-Forward Validation]]
 - [[Strategy Optimization]]
 - [[AI Strategy Generation]]

@@ -15,6 +15,8 @@ hmmlearn>=0.3.0
 
 # Market data
 yfinance>=0.2.30
+# Research-only session contract. Offline calendar rules; reviewed before upgrades.
+exchange-calendars==4.13.2
 
 # Alpaca paper broker
 # v1.3 transport/reconciliation tested against this SDK; review before upgrading.
