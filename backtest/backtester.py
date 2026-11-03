@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
-from backtest.causal_fills import Pending, assess, usable_bars
+from backtest.causal_fills import Pending, assess, usable_bars, opening_eligible
 
 from backtest.metrics import PerformanceMetrics, calculate_performance_metrics
 
@@ -262,8 +262,12 @@ class Backtester:
                 "accounting_version": 2, "starting_equity": self.starting_equity,
                 "slippage_bps": self.slippage_bps, "commission_per_trade": self.commission_per_trade,
                 "warmup_bars": WARMUP_BARS, "reduce_fraction": REDUCE_FRACTION,
-                "fill_model_version": "daily-open-gap-stop-v1",
-                "timing_version": "completed-close-to-next-usable-open-v1",
+                "fill_model_version": "daily-open-gap-stop-v2",
+                "timing_version": "completed-close-to-next-eligible-open-v2",
+                "data_quality_policy": "retrospective-ohlcv-quarantine-nonnegative-volume-v1",
+                "opening_eligibility_policy": "explicit-opening-flag-else-assumed-quote-v1",
+                "opening_liquidity_verified": False,
+                "order_lifecycle_version": "nonhold-supersedes-pending-v1",
             }
             result.config_snapshot.update(accounting_version=2, research_manifest=provenance)
             return result
@@ -328,18 +332,19 @@ class Backtester:
             portfolio.begin_day(date)
 
             bars = {t: frame.loc[date] for t, frame in features.items() if date in frame.index}
+            opening_bars = {t: bar for t, bar in bars.items() if opening_eligible(bar)}
             for t, pos in portfolio.positions.items():
-                if t in bars:
-                    pos.current_price = float(bars[t]["open"])
+                if t in opening_bars:
+                    pos.current_price = float(opening_bars[t]["open"])
             # Resting protective gap stops precede queued market orders.
             for t in list(portfolio.positions):
-                if t in bars and bars[t]["open"] <= portfolio.positions[t].stop_loss:
-                    self._check_exits(portfolio, t, date, bars[t])
-            for t in sorted(pending.keys() & bars.keys()):
-                pending.pop(t).attempt(self, risk_mgr, portfolio, t, date, float(bars[t]["open"]))
+                if t in opening_bars and opening_bars[t]["open"] <= portfolio.positions[t].stop_loss:
+                    self._check_exits(portfolio, t, date, opening_bars[t])
+            for t in sorted(pending.keys() & opening_bars.keys()):
+                pending.pop(t).attempt(self, risk_mgr, portfolio, t, date, float(opening_bars[t]["open"]))
             for t in list(portfolio.positions):
-                if t in bars:
-                    self._check_exits(portfolio, t, date, bars[t])
+                if t in opening_bars:
+                    self._check_exits(portfolio, t, date, opening_bars[t])
             for t, pos in portfolio.positions.items():
                 if t in bars:
                     pos.current_price = float(bars[t]["close"])
@@ -370,6 +375,13 @@ class Backtester:
                     if signal.action == SignalAction.HOLD:
                         continue
 
+                    # New non-HOLD intent withdraws old intent even if risk rejects
+                    # the replacement. HOLD and absent/invalid bars leave it pending.
+                    if ticker in pending:
+                        pending.pop(ticker).transition(
+                            "cancelled_superseded", date, "after_close",
+                            "new_nonhold_signal:" + signal.action.value)
+
                     decision = assess(risk_mgr, portfolio, ticker, signal)
 
                     decisions_log.append({
@@ -396,7 +408,7 @@ class Backtester:
                 bench_curve[date] = self.starting_equity * cur_bench / bench_start_price
 
         for order in pending.values():
-            order.record.update(status="expired_end_of_data", cancellation_bar=common[-1])
+            order.transition("expired_end_of_data", common[-1], "after_close", "end_of_data")
 
         # -- Build output series --
         equity_curve  = pd.Series(portfolio.equity_curve, name="equity",    dtype=float)

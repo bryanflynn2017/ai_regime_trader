@@ -23,12 +23,37 @@ Implemented as a research and validation tool.
    first. A long stop uses the lesser of open and stop, less slippage; a target
    uses the target less slippage, without favorable gap improvement.
 4. Mark remaining positions to close. On a symbol's missing/unusable bars,
-   retain its last mark, generate no signal or fill, and keep its order pending.
+   retain its last mark, generate no signal or fill, and keep its order pending
+   (explicit opening flags have the distinct behavior described below).
    At the end, expire outstanding orders; do not liquidate open positions.
+
+### Eligibility and lifecycle correction (v2)
+
+Opening eligibility and retrospective data integrity are separate policies.
+For admitted records, daily volume (including zero) and later high/low/close
+do not choose the opening fill or quantity. A caller may supply a boolean
+`opening_tradable` known at the open; false or unknown values prevent execution.
+Without that column, the model ASSUMES the valid opening quote is available.
+This is not evidence of liquidity, an auction fill or actual market access.
+When an explicit flag blocks the open, this conservative daily model also
+skips bracket fills for that session because reopening time is unknown, but
+can still mark and observe valid completed-bar data at close.
+
+The separately versioned retrospective quarantine still rejects nonfinite or
+inconsistent OHLCV, negative volume, nonpositive prices, duplicate labels and
+legacy `tradable=False` records. Thus invalid later prints CAN exclude a whole
+record; these results remain conditional on a cleaned historical dataset.
+Zero daily volume alone is no longer such an exclusion.
+
+A new non-HOLD closing signal explicitly cancels an older pending order before
+evaluating the replacement, even if the replacement fails risk checks. HOLD,
+missing data and quarantined bars leave an order pending. All order records
+retain transition history with session labels, phases and reasons, including
+supersession, risk/bracket cancellation, fill and end-of-data expiration.
 
 Replay uses the union of input dates and each symbol's own usable-bar warmup.
 Missing or nonfinite OHLCV, inconsistent ranges, duplicate bar labels,
-nonpositive prices/volume and explicitly nontradable rows are not market
+nonpositive prices, negative volume and explicitly nontradable rows are not market
 prints. Whole-bar validity is a historical data admission rule, not a claim
 that daily volume or extremes were known at the open. Opening risk checks do
 not use the day's range, close or volume to price or size orders. Daily bars
@@ -37,7 +62,9 @@ partial fills. Slippage is a fixed adverse cost represented in the fill price.
 
 Inspect `BacktestResult.metadata["orders"]` for order timing, fills and
 cancellations. The manifest's simulation section records
-`daily-open-gap-stop-v1` and `completed-close-to-next-usable-open-v1`.
+`daily-open-gap-stop-v2` and `completed-close-to-next-eligible-open-v2`,
+plus opening-eligibility, data-quality and order-lifecycle policies and
+`opening_liquidity_verified=False`.
 Accounting stays at version 2. Runs without these timing/fill versions used
 different execution assumptions: rerun comparisons; do not relabel old results.
 

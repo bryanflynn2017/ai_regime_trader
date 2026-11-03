@@ -67,6 +67,8 @@ def test_pending_waits_for_next_usable_symbol_open():
     other = df.copy()
     df = df.drop(dates[1])
     df.loc[dates[2], "volume"] = 0
+    df["opening_tradable"] = True
+    df.loc[dates[2], "opening_tradable"] = False
     df.loc[dates[3], "low"] = np.nan
     df.loc[dates[4], "high"] = 80
     df.loc[dates[5], "open"] = 0
@@ -75,7 +77,7 @@ def test_pending_waits_for_next_usable_symbol_open():
     r = replay(df, {dates[0]: "BUY"}, other=other)
     order, = r.metadata["orders"]
     assert order["execution_bar"] == dates[-1]
-    assert r.metadata["unusable_bars"]["ABC"] == 5
+    assert r.metadata["unusable_bars"]["ABC"] == 4
     assert list(r.equity_curve.loc[dates[:-1]]) == [r.starting_equity] * 7
 
 
@@ -105,3 +107,65 @@ def test_slippage_and_both_sides_of_fees_reconcile_through_reduce_and_sell():
     assert sum(t["pnl"] for t in r.trades) == pytest.approx(expected)
     assert r.final_equity - r.starting_equity == pytest.approx(expected)
     assert r.metadata["terminal_open_positions"] == 0
+
+
+@pytest.mark.parametrize("volume", [0, 1, 1000000])
+def test_opening_fill_ignores_valid_later_prints_and_daily_volume(volume):
+    df = series([FLAT, (105, 110, 100, 107, 1000), FLAT])
+    actions = {df.index[-3]: "BUY"}
+    before = replay(df, actions).metadata["orders"][0]
+    df.loc[df.index[-2], ["high", "low", "close", "volume"]] = [150, 75, 80, volume]
+    after = replay(df, actions)
+    assert after.metadata["orders"][0] == before
+    manifest = after.config_snapshot["research_manifest"]["simulation"]
+    assert manifest["opening_liquidity_verified"] is False
+    assert manifest["data_quality_policy"].startswith("retrospective-")
+
+
+@pytest.mark.parametrize("column,value", [("volume", -1), ("close", np.nan), ("high", 90)])
+def test_declared_quarantine_can_exclude_invalid_execution_record(column, value):
+    df = series([FLAT, FLAT, FLAT])
+    df.loc[df.index[-2], column] = value
+    r = replay(df, {df.index[-3]: "BUY"})
+    assert r.metadata["orders"][0]["execution_bar"] == df.index[-1]
+    assert r.metadata["unusable_bars"]["ABC"] == 1
+
+
+@pytest.mark.parametrize("conflict", ["BUY", "SELL"])
+def test_pending_is_explicitly_superseded_across_missing_and_closed_opens(conflict):
+    df = series([FLAT] * 7)
+    dates = df.index[-7:]
+    other = df.copy()
+    df = df.drop(dates[1])
+    df.loc[dates[2], "high"] = 80  # Invalid: no new signal and no fill.
+    df["opening_tradable"] = True
+    df.loc[dates[3:6], "opening_tradable"] = False
+    r = replay(df, {dates[0]: "BUY", dates[4]: conflict}, other=other)
+    first = r.metadata["orders"][0]
+    assert first["status"] == "cancelled_superseded"
+    assert first["execution_bar"] is None
+    assert first["cancellation_bar"] == dates[4]
+    assert first["reason"] == "new_nonhold_signal:" + conflict
+    assert first["transitions"] == [
+        {"status": "pending", "bar": dates[0], "phase": "after_close", "reason": "approved_signal"},
+        {"status": "cancelled_superseded", "bar": dates[4], "phase": "after_close",
+         "reason": "new_nonhold_signal:" + conflict},
+    ]
+    assert all(o["status"] != "pending" for o in r.metadata["orders"])
+    if conflict == "BUY":
+        assert r.metadata["orders"][1]["execution_bar"] == dates[6]
+    else:
+        # Risk converts SELL-without-holdings to HOLD, but old BUY stays cancelled.
+        assert len(r.metadata["orders"]) == 1
+        assert r.final_equity == r.starting_equity
+
+
+def test_pending_holds_then_expires_when_open_flag_stays_false():
+    df = series([FLAT] * 3)
+    df["opening_tradable"] = True
+    df.loc[df.index[-2:], "opening_tradable"] = False
+    r = replay(df, {df.index[-3]: "BUY"})
+    order, = r.metadata["orders"]
+    assert [t["status"] for t in order["transitions"]] == ["pending", "expired_end_of_data"]
+    assert order["cancellation_bar"] == df.index[-1]
+    assert order["reason"] == "end_of_data"
