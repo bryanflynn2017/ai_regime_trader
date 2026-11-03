@@ -26,10 +26,11 @@ def _make_ohlcv(n: int = 450, seed: int = 42, drift: float = 0.0004) -> pd.DataF
     log_ret = rng.normal(drift, 0.010, n)
     close = 100.0 * np.exp(np.cumsum(log_ret))
     spread = close * 0.004
+    opening = close * (1 + rng.normal(0, 0.002, n))
     return pd.DataFrame({
-        "open":   close * (1 + rng.normal(0, 0.002, n)),
-        "high":   close + spread,
-        "low":    np.maximum(close - spread, 0.01),
+        "open":   opening,
+        "high":   np.maximum(opening, close + spread),
+        "low":    np.minimum(opening, np.maximum(close - spread, 0.01)),
         "close":  close,
         "volume": np.full(n, 8_000_000.0),
     }, index=dates)
@@ -367,10 +368,8 @@ def test_slippage_applied_to_buy_and_sell(tmp_path):
     sells = [t for t in result.trades if t["action"] == "SELL" and t["exit_reason"] == "signal"]
     if sells:
         sell_trade = sells[0]
-        close_at_sell = float(df.loc[sell_d, "close"])
-        assert sell_trade["exit_price"] < close_at_sell * 1.001, (
-            "Sell execution price should be <= close (slippage takes you below)"
-        )
+        next_open = df.loc[dates[WARMUP_BARS + 3], "open"]
+        assert sell_trade["exit_price"] == pytest.approx(next_open * (1 - slip_bps / 10000))
 
 
 # ---------------------------------------------------------------------------

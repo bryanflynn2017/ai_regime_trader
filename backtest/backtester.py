@@ -1,14 +1,9 @@
 """
 Event-driven daily-bar backtester.
 
-Pipeline per bar (strict no-lookahead):
-  1. Slice historical data up to and including the current bar.
-  2. Check stop-loss / take-profit for all open positions.
-  3. For each ticker, generate a signal using StrategyOrchestrator.
-  4. Evaluate each signal through RiskManager.
-  5. Simulate order execution (slippage, commission).
-  6. Mark portfolio to market.
-  7. Record equity, signal, and risk decision.
+Daily replay: mark at usable opens, apply gap stops, recheck and execute prior
+decisions; check intrabar brackets (stop first when ambiguous); mark at close,
+observe signals, then queue for the next usable open. No terminal liquidation.
 
 No-lookahead guarantee:
   Features are pre-computed once on the full dataset (backward-looking windows).
@@ -28,6 +23,8 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
+
+from backtest.causal_fills import Pending, assess, usable_bars, opening_eligible
 
 from backtest.metrics import PerformanceMetrics, calculate_performance_metrics
 
@@ -265,6 +262,12 @@ class Backtester:
                 "accounting_version": 2, "starting_equity": self.starting_equity,
                 "slippage_bps": self.slippage_bps, "commission_per_trade": self.commission_per_trade,
                 "warmup_bars": WARMUP_BARS, "reduce_fraction": REDUCE_FRACTION,
+                "fill_model_version": "daily-open-gap-stop-v2",
+                "timing_version": "completed-close-to-next-eligible-open-v2",
+                "data_quality_policy": "retrospective-ohlcv-quarantine-nonnegative-volume-v1",
+                "opening_eligibility_policy": "explicit-opening-flag-else-assumed-quote-v1",
+                "opening_liquidity_verified": False,
+                "order_lifecycle_version": "nonhold-supersedes-pending-v1",
             }
             result.config_snapshot.update(accounting_version=2, research_manifest=provenance)
             return result
@@ -275,12 +278,17 @@ class Backtester:
 
         # -- Pre-compute features for all tickers (O(N) once per ticker) --
         features: Dict[str, pd.DataFrame] = {}
+        calendar = set()
+        skipped = {}
         for ticker, df in data_by_ticker.items():
             try:
                 from data.market_data import validate_ohlcv
                 from data.feature_engineering import add_features
-                validate_ohlcv(df)
-                features[ticker] = add_features(df)
+                clean = usable_bars(df)
+                calendar.update(df.index.dropna())
+                skipped[ticker] = len(df) - len(clean)
+                validate_ohlcv(clean)
+                features[ticker] = add_features(clean)
                 logger.debug("Features computed for {} ({} bars)", ticker, len(df))
             except Exception as exc:
                 logger.warning("Skipping {}: {}", ticker, exc)
@@ -288,9 +296,8 @@ class Backtester:
         if not features:
             return self._empty_result("No valid ticker data after preprocessing")
 
-        # -- Find common trading dates --
-        date_sets = [set(df.index) for df in features.values()]
-        common = sorted(set.intersection(*date_sets))
+        # A missing symbol is not a market-wide holiday.
+        common = sorted(calendar)
 
         if len(common) <= WARMUP_BARS:
             return self._empty_result(
@@ -313,6 +320,8 @@ class Backtester:
         portfolio   = _Portfolio(self.starting_equity)
         signals_log = []
         decisions_log = []
+        pending = {}
+        orders = []
 
         # -- Main simulation loop --
         for i, date in enumerate(common):
@@ -322,10 +331,24 @@ class Backtester:
 
             portfolio.begin_day(date)
 
-            # Step 1: check stop-loss and take-profit for all open positions
-            for t in list(portfolio.positions.keys()):
-                if t in features and date in features[t].index:
-                    self._check_exits(portfolio, t, date, features[t].loc[date])
+            bars = {t: frame.loc[date] for t, frame in features.items() if date in frame.index}
+            opening_bars = {t: bar for t, bar in bars.items() if opening_eligible(bar)}
+            for t, pos in portfolio.positions.items():
+                if t in opening_bars:
+                    pos.current_price = float(opening_bars[t]["open"])
+            # Resting protective gap stops precede queued market orders.
+            for t in list(portfolio.positions):
+                if t in opening_bars and opening_bars[t]["open"] <= portfolio.positions[t].stop_loss:
+                    self._check_exits(portfolio, t, date, opening_bars[t])
+            for t in sorted(pending.keys() & opening_bars.keys()):
+                pending.pop(t).attempt(self, risk_mgr, portfolio, t, date, float(opening_bars[t]["open"]))
+            for t in list(portfolio.positions):
+                if t in opening_bars:
+                    self._check_exits(portfolio, t, date, opening_bars[t])
+            for t, pos in portfolio.positions.items():
+                if t in bars:
+                    pos.current_price = float(bars[t]["close"])
+            portfolio.update_peak()
 
             # Step 2: generate and evaluate signals for each ticker
             for ticker in sorted(features.keys()):
@@ -334,6 +357,8 @@ class Backtester:
 
                 # Strict no-lookahead: only rows up to and including current date
                 df_to_date = features[ticker].loc[:date]
+                if len(df_to_date) <= WARMUP_BARS:
+                    continue
 
                 try:
                     from strategy.signals import SignalAction
@@ -350,18 +375,14 @@ class Backtester:
                     if signal.action == SignalAction.HOLD:
                         continue
 
-                    decision = risk_mgr.evaluate_signal(
-                        signal                     = signal,
-                        equity                     = portfolio.equity,
-                        starting_day_equity        = portfolio.day_start_equity,
-                        starting_week_equity       = portfolio.week_start_equity,
-                        peak_equity                = portfolio.peak_equity,
-                        current_portfolio_exposure = portfolio.portfolio_exposure,
-                        current_ticker_exposure    = portfolio.ticker_exposure(ticker),
-                        open_positions_count       = len(portfolio.positions),
-                        trades_today               = portfolio.trades_today,
-                        has_existing_position      = ticker in portfolio.positions,
-                    )
+                    # New non-HOLD intent withdraws old intent even if risk rejects
+                    # the replacement. HOLD and absent/invalid bars leave it pending.
+                    if ticker in pending:
+                        pending.pop(ticker).transition(
+                            "cancelled_superseded", date, "after_close",
+                            "new_nonhold_signal:" + signal.action.value)
+
+                    decision = assess(risk_mgr, portfolio, ticker, signal)
 
                     decisions_log.append({
                         "date":     date,
@@ -371,25 +392,23 @@ class Backtester:
                         "approved": decision.approved,
                     })
 
-                    bar = features[ticker].loc[date]
-                    self._execute(portfolio, ticker, date, signal, decision, bar)
+                    if decision.approved and decision.final_action != SignalAction.HOLD:
+                        order = Pending.queue(signal, decision, ticker, date)
+                        pending[ticker] = order
+                        orders.append(order.record)
 
                 except Exception as exc:
                     logger.debug("Bar {} / {} error: {}", date, ticker, exc)
 
-            # Step 3: mark to market
-            for ticker, pos in portfolio.positions.items():
-                if ticker in features and date in features[ticker].index:
-                    pos.current_price = float(features[ticker].loc[date, "close"])
-
             portfolio.equity_curve[date] = portfolio.equity
-            portfolio.update_peak()
+            if bench_ticker in bars:
+                cur_bench = float(bars[bench_ticker]["close"])
+                if bench_start_price is None:
+                    bench_start_price = cur_bench
+                bench_curve[date] = self.starting_equity * cur_bench / bench_start_price
 
-            # Benchmark
-            if bench_start_price is None:
-                bench_start_price = float(features[bench_ticker].loc[date, "close"])
-            cur_bench = float(features[bench_ticker].loc[date, "close"])
-            bench_curve[date] = self.starting_equity * cur_bench / bench_start_price
+        for order in pending.values():
+            order.transition("expired_end_of_data", common[-1], "after_close", "end_of_data")
 
         # -- Build output series --
         equity_curve  = pd.Series(portfolio.equity_curve, name="equity",    dtype=float)
@@ -427,6 +446,8 @@ class Backtester:
             },
             warnings  = portfolio.warnings,
             metadata  = {
+                "orders": orders, "unusable_bars": skipped,
+                "terminal_open_positions": len(portfolio.positions),
                 "tickers":       sorted(features.keys()),
                 "total_bars":    len(common),
                 "backtest_bars": len(common) - WARMUP_BARS,
@@ -449,9 +470,8 @@ class Backtester:
         Check if a position's stop-loss or take-profit was hit on this bar.
 
         Conservative rule: stop-loss checked before take-profit.
-        If the bar's low is at or below the stop, we fill at the stop
-        (with adverse slippage).  Only if the stop was NOT hit do we
-        check the take-profit.
+        A gap through the stop uses the lower opening price before adverse
+        slippage. Targets receive no favorable gap-price improvement.
         """
         pos = portfolio.positions.get(ticker)
         if pos is None:
@@ -463,13 +483,15 @@ class Backtester:
 
         # -- Stop-loss: fill below stop, conservative --
         if pos.stop_loss > 0 and low <= pos.stop_loss:
-            fill = pos.stop_loss * (1.0 - slip)
+            fill = min(float(bar["open"]), pos.stop_loss) * (1.0 - slip)
             portfolio.book_exit(pos, pos.shares, fill, self.commission_per_trade,
                                 date, "SELL", "stop_loss")
+            portfolio.trades[-1]["execution_phase"] = "open" if bar["open"] <= pos.stop_loss else "intrabar"
         elif pos.take_profit > 0 and high >= pos.take_profit:
             fill = pos.take_profit * (1.0 - slip)
             portfolio.book_exit(pos, pos.shares, fill, self.commission_per_trade,
                                 date, "SELL", "take_profit")
+            portfolio.trades[-1]["execution_phase"] = "bar_trigger"
 
     # ------------------------------------------------------------------
     # Private: order execution
@@ -482,12 +504,11 @@ class Backtester:
         date:      pd.Timestamp,
         signal:    Any,
         decision:  Any,
-        bar:       pd.Series,
-    ) -> None:
+        opening:   float,
+    ) -> Optional[float]:
         from strategy.signals import SignalAction
 
-        close = float(bar["close"])
-        slip  = self.slippage_bps / 10_000
+        slip = self.slippage_bps / 10_000
 
         action = decision.final_action
         if not decision.approved and action != SignalAction.HOLD:
@@ -498,7 +519,7 @@ class Backtester:
             if ps is None or not ps.approved or ps.shares <= 0:
                 return
 
-            fill = close * (1.0 + slip)
+            fill = opening * (1.0 + slip)
             cost = fill * ps.shares + self.commission_per_trade
 
             if not cost <= portfolio.cash:
@@ -524,16 +545,19 @@ class Backtester:
                 pos.current_price = fill
             portfolio.cash -= cost
             portfolio.trades_today += 1
+            return ps.shares
 
         elif action in (SignalAction.SELL, SignalAction.REDUCE):
             pos = portfolio.positions.get(ticker)
             if pos is None:
                 return
             shares = pos.shares if action == SignalAction.SELL else pos.shares * REDUCE_FRACTION
-            fill = close * (1.0 - slip)
+            fill = opening * (1.0 - slip)
             portfolio.book_exit(pos, shares, fill, self.commission_per_trade,
                                 date, action.value, "signal")
+            portfolio.trades[-1]["execution_phase"] = "open"
             portfolio.trades_today += 1
+            return shares
 
     # ------------------------------------------------------------------
     # Private: empty result
