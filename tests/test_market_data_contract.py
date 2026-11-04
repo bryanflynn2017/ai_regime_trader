@@ -202,3 +202,55 @@ def test_provenance_rejects_private_values_and_overlapping_timestamps():
         safe_contract_metadata(frame)
     with pytest.raises(ContractError, match="Overlapping"):
         normalize_research_bars(raw(["2024-03-11 13:30Z", "2024-03-11 13:32Z"]), contract())
+
+
+def test_delayed_receipt_revises_vwap_without_backdating_or_mutating_prior_snapshot():
+    df = raw(["2024-03-11 13:30Z", "2024-03-11 13:35Z"])
+    df.iloc[0, :4] = [100, 100, 100, 100]
+    df.iloc[1, :4] = [200, 200, 200, 200]
+    df["available_at"] = pd.to_datetime(["2024-03-11 13:45Z", "2024-03-11 13:40Z"])
+    bars = normalize_research_bars(df, contract())
+    earlier = bars.features_as_of("2024-03-11 13:40Z")
+    saved = earlier.copy(deep=True)
+    assert list(earlier.session_vwap) == [200]
+    assert earlier.index[0] == pd.Timestamp("2024-03-11 09:35", tz="America/New_York")
+    assert earlier.feature_available_at.iloc[0] == pd.Timestamp("2024-03-11 13:40Z")
+    later = bars.features_as_of("2024-03-11 13:45Z")
+    assert list(later.session_vwap) == [100, 150]
+    assert list(later.feature_available_at) == [pd.Timestamp("2024-03-11 13:45Z")] * 2
+    pd.testing.assert_frame_equal(saved, earlier)
+    pd.testing.assert_frame_equal(saved, bars.features_as_of("2024-03-11 13:40Z"))
+    # Caller mutations of a returned snapshot must not change subsequent queries.
+    later.iloc[-1, later.columns.get_loc("session_vwap")] = -1
+    assert bars.features_as_of("2024-03-11 13:45Z").session_vwap.iloc[-1] == 150
+
+
+@pytest.mark.parametrize("receipts", [(35, 40, 45), (55, 50, 45), (50, 40, 45)])
+@pytest.mark.parametrize("response_order", [(0, 1, 2), (2, 0, 1)])
+def test_snapshot_values_follow_event_order_not_receipt_or_response_order(receipts, response_order):
+    df = raw(["2024-03-11 13:30Z", "2024-03-11 13:35Z", "2024-03-11 13:40Z"])
+    prices = [100., 200., 400.]
+    for i, price in enumerate(prices):
+        df.iloc[i, :4] = [price] * 4
+    df["available_at"] = pd.to_datetime([f"2024-03-11 13:{m}:00Z" for m in receipts])
+    bars = normalize_research_bars(df.iloc[list(response_order)], contract())
+    saved = {}
+    # Deliberately query backwards and repeatedly: no retained arrival-state.
+    for minute in (55, 40, 50, 35, 45, 40, 55):
+        at = pd.Timestamp(f"2024-03-11 13:{minute}:00Z")
+        result = bars.features_as_of(at)
+        known = [i for i in range(3) if receipts[i] <= minute]
+        assert len(result) == len(known)
+        if known:
+            # Equal-volume VWAP, independently derived in market-event order.
+            assert list(result.session_vwap) == pytest.approx([
+                sum(prices[i] for i in known[:n]) / n for n in range(1, len(known) + 1)])
+            expected_available = [
+                pd.Timestamp(f"2024-03-11 13:{max(receipts[i] for i in known[:n])}:00Z")
+                for n in range(1, len(known) + 1)]
+            assert list(result.feature_available_at) == expected_available
+            assert (result.feature_available_at <= at).all()
+            assert list(result.index) == [df.index[i].tz_convert("America/New_York") for i in known]
+        if minute in saved:
+            pd.testing.assert_frame_equal(saved[minute], result)
+        saved[minute] = result.copy(deep=True)

@@ -73,6 +73,36 @@ sessions)` uses enumerated values, not unrestricted provenance strings.
 
 ## Minimal offline usage
 
+### Snapshot semantics with delayed or reversed receipt times
+
+`features_as_of(T)` first filters records by declared availability <= T,
+then computes features in **market-event order**, never receipt order or
+provider-response order. Each query is an independent recomputation. No
+arrival-state cache is retained, and later queries do not mutate earlier results.
+
+The returned index is the exchange-local **bar-start event label**, not a
+feature observation or calculation timestamp. `feature_available_at` is the
+conservative maximum receipt/availability time across the visible event prefix
+that could contribute to that row. It is not a wall-clock computation log or a
+guarantee of the earliest possible time for each individual feature.
+The snapshot observation cutoff is the caller's T; retain it when archiving a
+snapshot. Do not concatenate revised snapshots and treat their event labels as
+historical knowledge. Feature rows from a later snapshot may be revised by late
+data, but their availability metadata must not be backdated.
+
+For equal-volume bars with typical prices 100 and 200:
+
+| Snapshot cutoff ET | Observable event bars | Session VWAP by event row | Feature availability ET |
+|---|---|---|---|
+| 09:40 | 09:35 only | 200 | 09:40 |
+| 09:45 | 09:30, 09:35 | 100, 150 | 09:45, 09:45 |
+
+Here the 09:30 bar arrives at 09:45 and the 09:35 bar at 09:40.
+The revised 150 value did not exist in the 09:40 snapshot. Requerying 09:40,
+even after a 09:45 query, still yields 200. The cumulative maximum may conservatively
+delay metadata for features that do not actually use every earlier row; it
+must not be interpreted as a precise per-feature dependency analysis.
+
 ```python
 from backtest.market_data_contract import DataContract, normalize_research_bars
 
