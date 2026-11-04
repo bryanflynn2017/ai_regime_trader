@@ -68,11 +68,13 @@ def revision(root=None):
 
 
 def fingerprint(symbol, df):
+    from backtest.market_data_contract import safe_contract_metadata
     # Hash schema/labels too: row hashes alone do not include column names or index timezone.
     schema = [symbol, list(map(str, df.columns)), list(map(str, df.dtypes)), str(df.index.dtype)]
     digest = sha256(json.dumps(schema, ensure_ascii=True).encode())
     digest.update(pd.util.hash_pandas_object(df, index=True).to_numpy(dtype="<u8").tobytes())
-    record = {"sha256": digest.hexdigest(), "rows": len(df)}
+    record = {"sha256": digest.hexdigest(), "rows": len(df),
+              "data_contract": safe_contract_metadata(df)}
     seed = df.attrs.get("synthetic_seed")
     if type(seed) is int:
         record["synthetic_seed"] = seed
@@ -80,6 +82,13 @@ def fingerprint(symbol, df):
 
 
 def manifest(data, settings, identity, seed):
+    from backtest.market_data_contract import ContractError
+    inputs = [fingerprint(symbol, data[symbol]) for symbol in sorted(data)]
+    contracts = [item["data_contract"] for item in inputs]
+    if any(c["version"] != "legacy-unverified" for c in contracts):
+        if (any(c["version"] == "legacy-unverified" for c in contracts)
+                or len({c["adjustment"] for c in contracts}) > 1):
+            raise ContractError("Cannot mix contracted and unverified or differently adjusted inputs")
     commit, modified, integrity = revision()
     strategy_id, strategy_version, identity_status = identity
     return {
@@ -89,5 +98,5 @@ def manifest(data, settings, identity, seed):
         "settings": declared(settings), "strategy_seed": seed,
         "python": platform.python_version(),
         "dependencies": {p: version(p) for p in ("pandas", "numpy", "pydantic", "pydantic-settings")},
-        "inputs": [fingerprint(symbol, data[symbol]) for symbol in sorted(data)],
+        "inputs": inputs,
     }

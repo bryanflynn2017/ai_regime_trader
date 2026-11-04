@@ -216,6 +216,21 @@ class Backtester:
     # Public API
     # ------------------------------------------------------------------
 
+    def run_contracts(self, data_by_ticker, *, allow_retrospective_adjustments=False):
+        """Opt-in bridge for session-aligned, zero-delay DAILY research snapshots.
+
+        Intraday and delayed event-time replay are intentionally not inferred.
+        Legacy run(DataFrames) retains its behavior and is labeled unverified.
+        """
+        from backtest.market_data_contract import ContractError, ResearchBars
+        if not all(isinstance(bars, ResearchBars) for bars in data_by_ticker.values()):
+            raise ContractError("Expected normalized research snapshots")
+        if len({bars.contract.adjustment for bars in data_by_ticker.values()}) > 1:
+            raise ContractError("Cannot mix raw and adjusted prices in a research portfolio")
+        return self.run({ticker: bars.to_daily_research(
+            allow_retrospective_adjustments=allow_retrospective_adjustments)
+            for ticker, bars in data_by_ticker.items()})
+
     def run_single_ticker(
         self,
         ticker: str,
