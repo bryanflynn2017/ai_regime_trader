@@ -1,5 +1,8 @@
 # Robinhood read-only foundation (PR #7)
 
+Next increment: [[Robinhood MCP Protocol Foundation]] adds offline-only protocol
+discovery validation; it does not enable authentication or account connectivity.
+
 Status: NON-CONNECTED. No account access, authentication, MCP calls, network
 transport, CLI, persisted account data, or order operations are implemented.
 This is an internal integration contract, not a Python wrapper around Robinhood.
