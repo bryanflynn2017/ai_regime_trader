@@ -1,5 +1,9 @@
 # PR #8: official MCP discovery protocol foundation
 
+Follow-up: [[Secure MCP Discovery Transport]] adds a disabled-by-default JSON/SSE
+sender around this codec. The historical PR #8 scope below remains accurate for
+the codec itself; it does not describe the full capabilities of that follow-up.
+
 Reviewed 2026-11-04. Status: **offline-only protocol subset, NOT connected**.
 This is the smallest verified increment while provider auth/schema evidence is
 missing. It is not a complete Streamable HTTP transport or working brokerage
