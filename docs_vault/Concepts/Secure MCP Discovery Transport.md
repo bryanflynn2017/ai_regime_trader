@@ -69,9 +69,23 @@ timeouts are also capped at five seconds. No automatic retry occurs.
 
 Bounded shared memory carries only the final discovery JSON or a fixed error
 code back to the parent; no files, raw exception text or logs. Worker/session/
-response cleanup occurs on success and failure. Tests inject both fake HTTP
-sessions and fake process contexts; they never launch a network worker. Spawn
-requires a normal guarded Python entry point if used in future acceptance.
+response cleanup occurs on success and failure. HTTP tests inject fake sessions.
+In addition to fake-context unit tests, tests/test_mcp_native_spawn.py launches
+genuine spawn children with real shared memory and OS process handles. Importable
+module-level helpers install child-local network guards and replace HTTP with a
+synthetic function before invoking the production worker. Importing the test
+module never starts a process; pytest controls parent execution. No real Session
+is constructed. Spawn requires a normal guarded Python entry point if used in
+future acceptance.
+
+The native cases cover success, the exact 1 MiB boundary, oversized output,
+sanitized exceptions, abrupt child exit, deadline termination, and kill fallback.
+The fallback test deliberately suppresses the first terminate operation to
+exercise the real OS kill path. Tests assert distinct child PIDs, readiness,
+exit codes, closed process handles, no additional active children, empty output
+on errors, and no leaked stdout/stderr or private exception content. Finally
+blocks clean up children even if an assertion fails. These tests verify process
+mechanics, not actual HTTP or Robinhood connectivity.
 
 ## Security boundaries and remaining work
 
